@@ -4,7 +4,6 @@
 
 This assignment evaluates your ability to **rapidly learn new technologies** and **solve complex problems using AI tools**. We expect you to leverage AI assistants (ChatGPT, Claude, Copilot, etc.) throughout this process, as this reflects real-world development practices.
 
-**Time Limit:** 4-6 hours
 **Technologies:** Docker, Redpanda, Rust, NextJS, TypeScript
 
 
