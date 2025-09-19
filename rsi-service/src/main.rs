@@ -1,15 +1,15 @@
 use anyhow::Result;
 use futures::StreamExt;
 use log::{error, info};
-use rdkafka::consumer::{CommitMode, StreamConsumer};
-use rdkafka::message::{BorrowedMessage, Message};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::message::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::{ClientConfig, TopicPartitionList};
-use serde::{Deserialize, Serialize};
+use rdkafka::ClientConfig;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use tokio::signal;
 
 const DEFAULT_BROKER: &str = "localhost:29092";
@@ -33,54 +33,42 @@ fn now_ms() -> u128 {
         .unwrap_or_default()
 }
 
-/// compute 14-period RSI using standard (Wilder-ish) SMA over the last (period+1) prices.
+/// compute RSI using simple (Wilder-ish) SMA over last (period + 1) prices.
 /// returns None if not enough prices.
 fn compute_rsi_from_prices(prices: &VecDeque<f64>, period: usize) -> Option<f64> {
-    // Need at least period + 1 prices to compute period deltas
     if prices.len() < period + 1 {
         return None;
     }
-    // use the most recent (period + 1) prices
-    let mut deltas = Vec::with_capacity(period);
+
     let start = prices.len() - (period + 1);
-    let slice: Vec<f64> = prices
-        .iter()
-        .skip(start)
-        .cloned()
-        .collect();
+    let slice: Vec<f64> = prices.iter().skip(start).cloned().collect();
 
-    for i in 1..slice.len() {
-        deltas.push(slice[i] - slice[i - 1]);
-    }
-
-    // compute average gain and loss (simple moving average of gains/losses)
     let mut gain_sum = 0.0;
     let mut loss_sum = 0.0;
-    for d in deltas {
+
+    for i in 1..slice.len() {
+        let d = slice[i] - slice[i - 1];
         if d > 0.0 {
             gain_sum += d;
         } else {
             loss_sum += -d;
         }
     }
+
     let avg_gain = gain_sum / (period as f64);
     let avg_loss = loss_sum / (period as f64);
 
-    // avoid division by zero
-    let rs = if avg_loss == 0.0 {
-        // If avg_loss is 0, RSI is 100 (no losses)
+    if avg_loss == 0.0 {
         return Some(100.0);
-    } else {
-        avg_gain / avg_loss
-    };
+    }
 
+    let rs = avg_gain / avg_loss;
     let rsi = 100.0 - (100.0 / (1.0 + rs));
     Some(rsi)
 }
 
+/// try to extract (token_address, price) from a JSON payload string
 fn parse_price_from_payload(payload: &str) -> Option<(String, f64)> {
-    // Expect payload to be JSON (the same we produced from CSV).
-    // We'll look for "token_address" and "price_in_sol" fields.
     match serde_json::from_str::<Value>(payload) {
         Ok(v) => {
             let token = v
@@ -88,9 +76,9 @@ fn parse_price_from_payload(payload: &str) -> Option<(String, f64)> {
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string());
 
-            // try a couple of field names for price for resilience
             let price_field_candidates = ["price_in_sol", "price", "price_sol", "amount_in_sol"];
             let mut price_opt: Option<f64> = None;
+
             for field in price_field_candidates.iter() {
                 if let Some(pv) = v.get(*field) {
                     if pv.is_string() {
@@ -127,9 +115,12 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PERIOD);
 
-    info!("Starting RSI service. broker={} trade_topic={} rsi_topic={} period={}", broker, trade_topic, rsi_topic, period);
+    info!(
+        "Starting RSI service. broker={} trade_topic={} rsi_topic={} period={}",
+        broker, trade_topic, rsi_topic, period
+    );
 
-    // create consumer
+    // Create a stream consumer
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
         .set("group.id", "rsi-service-group")
@@ -137,75 +128,95 @@ async fn main() -> Result<()> {
         .set("auto.offset.reset", "earliest")
         .create()?;
 
-    // subscribe to trade topic
+    // Subscribe to trade topic
     consumer.subscribe(&[&trade_topic])?;
 
-    // create producer (FutureProducer)
+    // FutureProducer (async producer)
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
         .create()?;
 
-    // history per token
+    // per-token history buffer
     let mut history: HashMap<String, VecDeque<f64>> = HashMap::new();
 
-    // consumer message stream
+    // message stream
     let mut message_stream = consumer.stream();
 
-    // also handle shutdown signal gracefully
-    let mut sig = signal::ctrl_c();
+    // ctrl-c signal future (pinned so tokio::select! can use &mut)
+    let sig = signal::ctrl_c();
+    tokio::pin!(sig);
 
     loop {
         tokio::select! {
             maybe_msg = message_stream.next() => {
                 match maybe_msg {
                     Some(Ok(msg)) => {
-                        if let Some(payload) = msg.payload_view::<str>().ok().flatten() {
-                            if let Some((token_addr, price)) = parse_price_from_payload(payload) {
-                                let entry = history.entry(token_addr.clone()).or_insert_with(|| VecDeque::with_capacity(MAX_HISTORY));
-                                entry.push_back(price);
-                                if entry.len() > MAX_HISTORY {
-                                    entry.pop_front();
-                                }
+                        // payload_view returns Option<Result<&str, Utf8Error>> for this rdkafka version
+                        match msg.payload_view::<str>() {
+                            Some(Ok(payload)) => {
+                                if let Some((token_addr, price)) = parse_price_from_payload(payload) {
+                                    let entry = history.entry(token_addr.clone()).or_insert_with(|| VecDeque::with_capacity(MAX_HISTORY));
+                                    entry.push_back(price);
+                                    if entry.len() > MAX_HISTORY {
+                                        entry.pop_front();
+                                    }
 
-                                // compute RSI when we have enough points
-                                if let Some(rsi) = compute_rsi_from_prices(entry, period) {
-                                    let rsi_msg = RsiMessage {
-                                        token_address: token_addr.clone(),
-                                        rsi,
-                                        price,
-                                        timestamp_ms: now_ms(),
-                                    };
-                                    let payload = serde_json::to_string(&rsi_msg)?;
-                                    // send to rsi topic (async)
-                                    let produce_future = producer.send(
-                                        FutureRecord::to(&rsi_topic)
-                                            .payload(&payload)
-                                            .key(&token_addr),
-                                        0
-                                    );
+                                    if let Some(rsi) = compute_rsi_from_prices(entry, period) {
+                                        let rsi_msg = RsiMessage {
+                                            token_address: token_addr.clone(),
+                                            rsi,
+                                            price,
+                                            timestamp_ms: now_ms(),
+                                        };
 
-                                    // spawn a tokio task to await the send result but don't block main loop
-                                    tokio::spawn(async move {
-                                        match produce_future.await {
-                                            Ok(Ok(_delivery)) => {
-                                                // delivered
-                                            }
-                                            Ok(Err((kafka_err, _message))) => {
-                                                error!("Failed to deliver RSI message: {:?}", kafka_err);
-                                            }
+                                        // Serialize payload now (owned String)
+                                        let payload_string = match serde_json::to_string(&rsi_msg) {
+                                            Ok(s) => s,
                                             Err(e) => {
-                                                error!("Producer future cancelled/failed: {:?}", e);
+                                                error!("Failed to serialize RSI message: {:?}", e);
+                                                continue;
                                             }
-                                        }
-                                    });
+                                        };
+
+                                        // CLONE or move owned values into the spawned task so they are 'static
+                                        // FutureProducer implements Clone (cheap), String clones are owned.
+                                        let producer_cloned = producer.clone();
+                                        let rsi_topic_cloned = rsi_topic.clone();
+                                        let token_cloned = token_addr.clone();
+                                        let payload_cloned = payload_string; // move ownership
+
+                                        // spawn task that owns everything it needs
+                                        tokio::spawn(async move {
+                                            let produce_future = producer_cloned.send(
+                                                FutureRecord::to(&rsi_topic_cloned)
+                                                    .payload(&payload_cloned)
+                                                    .key(&token_cloned),
+                                                Some(Duration::from_secs(5)),
+                                            );
+
+                                            match produce_future.await {
+                                                Ok((partition, offset)) => {
+                                                    info!("RSI message delivered to partition {} offset {}", partition, offset);
+                                                }
+                                                Err((kafka_err, _owned_msg)) => {
+                                                    error!("Failed to deliver RSI message: {:?}", kafka_err);
+                                                }
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    error!("Could not parse token/price from payload: {}", payload);
                                 }
-                            } else {
-                                // couldn't parse payload; ignore or log
-                                error!("Could not parse token/price from payload: {}", payload);
+                            }
+                            Some(Err(e)) => {
+                                error!("Payload present but not valid UTF-8: {:?}", e);
+                            }
+                            None => {
+                                // no payload
                             }
                         }
 
-                        // commit the message offset (at-least-once)
+                        // commit offset (at least once)
                         if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
                             error!("Failed to commit message: {:?}", e);
                         }
@@ -218,8 +229,9 @@ async fn main() -> Result<()> {
                         break;
                     }
                 }
-            }
+            },
 
+            // graceful shutdown
             _ = &mut sig => {
                 info!("Shutdown signal received, exiting.");
                 break;
