@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   redpanda:
-    image: vectorized/redpanda:latest
+    image: redpandadata/redpanda:latest
     container_name: redpanda
     command: >
       redpanda start
@@ -15,9 +13,9 @@ services:
         --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:29092
         --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:29092
     ports:
-      - "9092:9092"     # internal Kafka API (within Docker network)
-      - "29092:29092"   # advertised OUTSIDE listener (useful for host clients)
-      - "9644:9644"     # Redpanda admin API
+      - "9092:9092"
+      - "29092:29092"
+      - "9644:9644"
     healthcheck:
       test: ["CMD-SHELL", "redpanda check"]
       interval: 5s
@@ -25,34 +23,33 @@ services:
       retries: 12
 
   console:
-    image: vectorized/redpanda-console:latest
+    image: redpandadata/console:latest
     container_name: redpanda-console
     depends_on:
       - redpanda
     environment:
-      - RP_CONSOLE_REDPAANDA_BROKERS=redpanda:9092
-      - RP_CONSOLE_LISTEN_ADDR=0.0.0.0:8080
+      - KAFKA_BROKERS=redpanda:9092
+      - LISTEN_ADDR=0.0.0.0:8080
     ports:
-      - "8080:8080"    # Redpanda Console UI
+      - "8080:8080"
 
   topic-init:
-    image: vectorized/rpk:latest
+    image: redpandadata/redpanda:latest
     container_name: rpk-init
     depends_on:
       - redpanda
     entrypoint: ["/bin/sh", "-c"]
     # Wait for Redpanda then create topics (runs once and exits).
     command: >
-      "for i in 1 2 3 4 5 6 7 8 9 10; do
-         redpanda-rectify.sh || true;
-         if rpk cluster info --brokers redpanda:9092 >/dev/null 2>&1; then break; fi;
-         echo 'waiting for redpanda...'; sleep 1;
-       done;
-       echo 'creating topics...';
-       rpk topic create trade-data --brokers redpanda:9092 --partitions 1 --replicas 1 || true;
-       rpk topic create rsi-data --brokers redpanda:9092 --partitions 1 --replicas 1 || true;
-       echo 'topics created';"
-    # ensure it doesn't restart continuously
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        redpanda-rectify.sh || true;
+        if rpk cluster info --brokers redpanda:9092 >/dev/null 2>&1; then break; fi;
+        echo 'waiting for redpanda...'; sleep 1;
+      done;
+      echo 'creating topics...';
+      rpk topic create trade-data --brokers redpanda:9092 --partitions 1 --replicas 1 || true;
+      rpk topic create rsi-data --brokers redpanda:9092 --partitions 1 --replicas 1 || true;
+      echo 'topics created';
     restart: "no"
 
 networks:
