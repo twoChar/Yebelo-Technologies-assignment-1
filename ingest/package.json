@@ -1,0 +1,28 @@
+{
+  "name": "trade-data-ingestor",
+  "version": "1.0.0",
+  "description": "Reads a CSV file and ingests trade data into Kafka in batches",
+  "main": "ingest.js",
+  "scripts": {
+    "start": "node ingest.js",
+    "dev": "nodemon ingest.js"
+  },
+  "dependencies": {
+    "csv-parser": "^3.0.0",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "kafka",
+    "csv",
+    "producer",
+    "batch"
+  ],
+  "author": "",
+  "license": "MIT"
+}
