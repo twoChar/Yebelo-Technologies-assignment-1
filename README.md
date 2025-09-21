@@ -1,4 +1,14 @@
+
+## Demo Video
+[Demo Video](https://youtu.be/VGV9GhaxoCY)
+
+
+
+
 CSV → ingest.js → trade-data → Rust RSI service → rsi-data → broadcaster → SSE/REST → dashboard charts.
+
+
+
 
 
 # T1
