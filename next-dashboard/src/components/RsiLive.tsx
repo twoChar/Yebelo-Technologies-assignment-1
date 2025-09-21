@@ -120,13 +120,22 @@ export default function RsiLive() {
     return historyMap[selectedToken] ?? [];
   }, [historyMap, selectedToken]);
 
-  // prepare data arrays for charts: map timestamp to readable label
-  const chartData = historyForSelected.map((p) => ({
-    time: new Date(p.timestamp_ms).toLocaleTimeString(),
+  // prepare data arrays for charts: include numeric 'ts' for proper X axis spacing
+  const chartData = historyForSelected.map((p, i) => ({
+    time: new Date(p.timestamp_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     price: p.price ?? null,
     rsi: p.rsi ?? null,
+    // use numeric millisecond timestamp for X axis
     ts: p.timestamp_ms,
   }));
+
+  // debug: log recent chartData so you can inspect timestamps in browser console
+  useEffect(() => {
+    if (chartData.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log('chartData sample:', chartData.slice(-10));
+    }
+  }, [chartData]);
 
   return (
     <div style={{
@@ -220,10 +229,25 @@ export default function RsiLive() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="time" minTickGap={20} />
+                  {/* numeric X axis using ms timestamp */}
+                  <XAxis
+                    dataKey="ts"
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    tick={{ fontSize: 11 }}
+                  />
                   <YAxis domain={['auto', 'auto']} />
                   <Tooltip formatter={(value: any) => (typeof value === 'number' ? value.toLocaleString() : value)} />
-                  <Line type="monotone" dataKey="price" stroke="#2563eb" dot={false} strokeWidth={2} />
+                  <Line
+                    type="monotone"
+                    dataKey="price"
+                    stroke="#2563eb"
+                    dot={true}
+                    strokeWidth={2}
+                    isAnimationActive={false}
+                    connectNulls={true}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
@@ -244,12 +268,26 @@ export default function RsiLive() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="time" minTickGap={20} />
+                  <XAxis
+                    dataKey="ts"
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    tick={{ fontSize: 11 }}
+                  />
                   <YAxis domain={[0, 100]} />
                   <Tooltip formatter={(value: any) => (typeof value === 'number' ? value.toFixed(2) : value)} />
                   <ReferenceLine y={70} label="70" stroke="#ff7b7b" strokeDasharray="3 3" />
                   <ReferenceLine y={30} label="30" stroke="#7bffb8" strokeDasharray="3 3" />
-                  <Line type="monotone" dataKey="rsi" stroke="#f59e0b" dot={false} strokeWidth={2} />
+                  <Line
+                    type="monotone"
+                    dataKey="rsi"
+                    stroke="#f59e0b"
+                    dot={true}
+                    strokeWidth={2}
+                    isAnimationActive={false}
+                    connectNulls={true}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             ) : (

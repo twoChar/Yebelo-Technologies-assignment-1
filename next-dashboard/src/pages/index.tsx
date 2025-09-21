@@ -17,7 +17,7 @@ export default function Home() {
           </div>
           <div style={{ textAlign: 'right', color: '#444', fontSize: 12 }}>
             <div>Redpanda Console: <a href="http://localhost:8080" target="_blank" rel="noreferrer">http://localhost:8080</a></div>
-            <div>Broadcaster: <span style={{ fontWeight: 600 }}>http://localhost:4000</span></div>
+            <div>Broadcaster: <span style={{ fontWeight: 600 }}>http://localhost:4001</span></div>
           </div>
         </header>
 

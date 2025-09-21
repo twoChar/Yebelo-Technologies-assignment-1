@@ -18,8 +18,13 @@ const BROKER = process.env.KAFKA_BROKER || 'localhost:29092';
 const RSI_TOPIC = process.env.RSI_TOPIC || 'rsi-data';
 const GROUP_ID = process.env.GROUP_ID || `rsi-broadcaster-${Date.now()}`;
 
-const kafka = new Kafka({ clientId: 'rsi-broadcaster', brokers: [BROKER] });
-const consumer = kafka.consumer({ groupId: GROUP_ID });
+const kafka = new Kafka({
+  clientId: 'rsi-broadcaster',
+  brokers: [BROKER],
+  connectionTimeout: 30000, // default often 1000-3000
+  requestTimeout: 300000,   // 5 minutes
+});
+const consumer = kafka.consumer({ groupId: GROUP_ID, sessionTimeout: 30000 });
 
 const app = express();
 app.use(cors());

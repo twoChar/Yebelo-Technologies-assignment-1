@@ -121,12 +121,21 @@ async fn main() -> Result<()> {
     );
 
     // Create a stream consumer
+    // when creating consumer: add settings for timeouts/heartbeats
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
         .set("group.id", "rsi-service-group")
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest")
+        // resilience tweaks:
+        .set("session.timeout.ms", "30000")      // shorter session timeout (30s)
+        .set("heartbeat.interval.ms", "10000")   // heartbeat frequency (10s)
+        .set("request.timeout.ms", "600000")     // allow long broker requests (10min)
+        .set("reconnect.backoff.ms", "1000")     // reconnect backoff
+        .set("reconnect.backoff.max.ms", "10000")
+        .set("socket.keepalive.enable", "true")
         .create()?;
+
 
     // Subscribe to trade topic
     consumer.subscribe(&[&trade_topic])?;
@@ -134,7 +143,11 @@ async fn main() -> Result<()> {
     // FutureProducer (async producer)
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
+        .set("message.timeout.ms", "600000")
+        .set("retries", "5")
+        .set("retry.backoff.ms", "1000")
         .create()?;
+
 
     // per-token history buffer
     let mut history: HashMap<String, VecDeque<f64>> = HashMap::new();
