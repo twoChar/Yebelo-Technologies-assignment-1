@@ -1,4 +1,10 @@
+twochar@twochars-MacBook-Air assignment-1 % docker exec -it redpanda rpk topic consume trade-data --brokers redpanda:9092 --offset start -n 5
+
+
 twochar@twochars-MacBook-Air ingest % KAFKA_BROKER=127.0.0.1:29092 node ingest.js
+
+
+
 
 
 twochar@twochars-MacBook-Air rsi-service % BROKER=127.0.0.1:29092 \
