@@ -21,3 +21,18 @@ cargo run
 
 twochar@twochars-MacBook-Air rsi-broadcaster % KAFKA_BROKER=localhost:29092 node server.js
 
+
+
+
+
+docker exec -it redpanda rpk topic consume rsi-data --brokers redpanda:9092 --offset start
+cd rsi-broadcaster
+KAFKA_BROKER=localhost:29092 PORT=4001 node server.js
+twochar@twochars-MacBook-Air assignment-1 % curl http://localhost:4001/api/latest-rsi | jq .
+twochar@twochars-MacBook-Air assignment-1 % curl -N http://localhost:4001/events
+
+
+
+
+
+CSV → ingest.js → trade-data → Rust RSI service → rsi-data → broadcaster → SSE/REST → dashboard charts.

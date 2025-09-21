@@ -120,18 +120,20 @@ async fn main() -> Result<()> {
         broker, trade_topic, rsi_topic, period
     );
 
-    // Create a stream consumer
-    // when creating consumer: add settings for timeouts/heartbeats
+    let group_id = std::env::var("GROUP_ID").unwrap_or_else(|_| "rsi-service".to_string());
+    let auto_offset_reset = std::env::var("AUTO_OFFSET_RESET").unwrap_or_else(|_| "earliest".to_string());
+
+    // Create a stream consumer using env vars (no duplicate keys)
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
-        .set("group.id", "rsi-service-group")
+        .set("group.id", &group_id)
+        .set("auto.offset.reset", &auto_offset_reset)
         .set("enable.auto.commit", "false")
-        .set("auto.offset.reset", "earliest")
-        // resilience tweaks:
-        .set("session.timeout.ms", "30000")      // shorter session timeout (30s)
-        .set("heartbeat.interval.ms", "10000")   // heartbeat frequency (10s)
-        .set("request.timeout.ms", "600000")     // allow long broker requests (10min)
-        .set("reconnect.backoff.ms", "1000")     // reconnect backoff
+        // resilience tweaks
+        .set("session.timeout.ms", "30000")
+        .set("heartbeat.interval.ms", "10000")
+        .set("request.timeout.ms", "600000")
+        .set("reconnect.backoff.ms", "1000")
         .set("reconnect.backoff.max.ms", "10000")
         .set("socket.keepalive.enable", "true")
         .create()?;

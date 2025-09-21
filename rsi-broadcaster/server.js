@@ -6,8 +6,9 @@
 // Env:
 //  KAFKA_BROKER (default: localhost:29092)
 //  RSI_TOPIC   (default: rsi-data)
-//  PORT        (default: 4000)
+//  PORT        (default: 4001)
 //  GROUP_ID    (optional) unique consumer group id; defaults to timestamp-based id (for replay)
+//  FROM_BEGINNING (optional) "true" or "false" (default "true" for testing)
 
 const express = require('express');
 const cors = require('cors');
@@ -17,13 +18,15 @@ const PORT = process.env.PORT || process.env.BROADCASTER_PORT || 4001;
 const BROKER = process.env.KAFKA_BROKER || 'localhost:29092';
 const RSI_TOPIC = process.env.RSI_TOPIC || 'rsi-data';
 const GROUP_ID = process.env.GROUP_ID || `rsi-broadcaster-${Date.now()}`;
+const FROM_BEGINNING = (process.env.FROM_BEGINNING || 'true').toLowerCase() === 'true';
 
 const kafka = new Kafka({
   clientId: 'rsi-broadcaster',
   brokers: [BROKER],
-  connectionTimeout: 30000, // default often 1000-3000
-  requestTimeout: 300000,   // 5 minutes
+  connectionTimeout: 30000,
+  requestTimeout: 300000,
 });
+
 const consumer = kafka.consumer({ groupId: GROUP_ID, sessionTimeout: 30000 });
 
 const app = express();
@@ -65,20 +68,41 @@ app.get('/events', (req, res) => {
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
-  // send a comment/heartbeat so clients know connection is open
+  // send a connected comment
   res.write(': connected\n\n');
+
+  // send the entire snapshot once so dashboard gets immediate data
+  try {
+    const snapshot = Object.entries(latest).map(([token, payload]) => ({ token, ...payload }));
+    if (snapshot.length) {
+      // single message with explicit type so clients can seed their state
+      res.write(`data: ${JSON.stringify({ type: 'snapshot', snapshot })}\n\n`);
+    }
+  } catch (err) {
+    console.error('Failed to send initial snapshot to SSE client:', err);
+  }
 
   clients.add(res);
   console.log(`SSE client connected (total: ${clients.size})`);
 
-  // remove client when connection closed
+  // heartbeat: send comment every 25s so proxies don't drop connection
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch (e) {
+      // ignore
+    }
+  }, 25000);
+
+  // clean up on client disconnect
   req.on('close', () => {
+    clearInterval(heartbeat);
     clients.delete(res);
     console.log(`SSE client disconnected (total: ${clients.size})`);
   });
 });
 
-// Start express server
+// Start express server and Kafka consumer
 const server = app.listen(PORT, async () => {
   console.log(`RSI broadcaster listening on http://localhost:${PORT}`);
   try {
@@ -89,23 +113,21 @@ const server = app.listen(PORT, async () => {
   }
 });
 
-// Kafka consumer runner
 async function runConsumer() {
   console.log(`Connecting Kafka consumer to broker ${BROKER} with groupId ${GROUP_ID}...`);
   await consumer.connect();
-  // for testing we subscribe from beginning so historical RSI messages are consumed.
-  // Set fromBeginning: false for production live-only consumption.
-  await consumer.subscribe({ topic: RSI_TOPIC, fromBeginning: true });
-  console.log(`Kafka consumer subscribed to topic ${RSI_TOPIC} (fromBeginning=true)`);
+
+  // subscribe (use FROM_BEGINNING env to control whether to replay)
+  await consumer.subscribe({ topic: RSI_TOPIC, fromBeginning: FROM_BEGINNING });
+  console.log(`Kafka consumer subscribed to topic ${RSI_TOPIC} (fromBeginning=${FROM_BEGINNING})`);
 
   await consumer.run({
-    // eachMessage will be called concurrently for multiple partitions;
-    // keep it small & non-blocking. We do lightweight processing here.
     eachMessage: async ({ topic, partition, message }) => {
       try {
         const raw = message.value && message.value.toString();
         if (!raw) return;
 
+        // optional debug log
         console.log('Received from Kafka:', raw);
 
         let parsed;
@@ -122,30 +144,29 @@ async function runConsumer() {
           parsed.token ||
           parsed.tokenAddress ||
           parsed.tokenAddr ||
+          parsed.key ||
           'unknown';
 
-        // ensure rsi/price/timestamp fields exist
+        // parse numeric fields
         const rsi = typeof parsed.rsi === 'number' ? parsed.rsi : parseFloat(parsed.rsi);
-        const price =
-          typeof parsed.price === 'number'
-            ? parsed.price
-            : parsed.price_in_sol
-            ? parseFloat(parsed.price_in_sol)
-            : parsed.price
-            ? parseFloat(parsed.price)
-            : undefined;
+        let price;
+        if (typeof parsed.price === 'number') price = parsed.price;
+        else if (parsed.price_in_sol) price = parseFloat(parsed.price_in_sol);
+        else if (parsed.price) price = parseFloat(parsed.price);
+        else if (parsed.priceInSol) price = parseFloat(parsed.priceInSol);
+
         const timestamp_ms = parsed.timestamp_ms || Date.now();
 
         // store latest (guard basic types)
         latest[token] = {
-          rsi: isNaN(rsi) ? null : rsi,
-          price: isNaN(price) ? null : price,
+          rsi: Number.isFinite(rsi) ? rsi : null,
+          price: Number.isFinite(price) ? price : null,
           timestamp_ms,
         };
 
-        // prepare payload and broadcast
+        // prepare payload and broadcast as explicit update
         const payload = { token, ...latest[token] };
-        broadcastSse(payload);
+        broadcastSse({ type: 'update', payload });
       } catch (err) {
         console.error('Error handling Kafka message:', err);
       }
@@ -157,17 +178,12 @@ async function runConsumer() {
 async function shutdown() {
   console.log('Shutting down broadcaster...');
   try {
-    // close express server (stop accepting new connections)
     server.close(() => console.log('HTTP server closed.'));
-    // close SSE clients
     for (const res of clients) {
-      try {
-        res.end();
-      } catch (e) {}
+      try { res.end(); } catch (e) {}
     }
     clients.clear();
 
-    // disconnect consumer
     try {
       await consumer.disconnect();
       console.log('Kafka consumer disconnected.');
@@ -178,10 +194,10 @@ async function shutdown() {
     process.exit(0);
   }
 }
+
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// also catch unhandled rejections to avoid silent failures
 process.on('unhandledRejection', (err) => {
   console.error('UnhandledRejection:', err);
 });
